@@ -10,5 +10,8 @@ FORMATS = {
     ".webp": "WEBP"
 }
 
-VERSION = "1.1"
-APP_TITLE = f"Image Resizer v{VERSION}"
+# Динамически получаем допустимые расширения из ключей FORMATS
+ALLOWED_EXTENSIONS = set(FORMATS.keys())
+
+VERSION = "1.2"
+APP_TITLE = f"OSRT v{VERSION}"

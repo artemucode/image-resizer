@@ -2,10 +2,12 @@ import os
 import webbrowser
 import tkinter as tk
 import threading
+import tempfile
 from pathlib import Path
 from tkinter import ttk, filedialog, messagebox
 from tkinterdnd2 import DND_FILES
-from PIL import ImageTk
+from PIL import Image, ImageTk, ImageGrab
+from datetime import datetime
 from config import MAX_SIZE, FORMATS, VERSION, APP_TITLE
 from image_processor import ImageProcessor
 from ui_components import setup_styles
@@ -14,19 +16,21 @@ class ImageResizerApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title(APP_TITLE)
-        self.root.geometry("750x780")
-        self.root.minsize(650, 700)
+        self.root.geometry("750x830")
+        self.root.minsize(650, 750)
 
         # Состояние
         self.image_paths = []
         self.save_path = None
-        self.is_processing = False  # Флаг фоновой обработки
+        self.is_processing = False
         self.keep_ratio_var = tk.BooleanVar(value=False)
         self.strip_meta_var = tk.BooleanVar(value=True)
         self.format_var = tk.StringVar(value="Исходный")
+        self.mode_var = tk.StringVar(value="Растянуть")
         self.quality_var = tk.IntVar(value=85)
-
-        # Интерфейс
+        
+        self.root.bind("<Control-Key>", self._on_ctrl_key)
+        
         setup_styles()
         self._create_widgets()
         self._layout_widgets()
@@ -40,7 +44,6 @@ class ImageResizerApp:
         self.left_frame = ttk.Frame(self.top_frame)
         self.listbox_label = ttk.Label(self.left_frame, text="Список файлов:")
         
-        # Список файлов
         self.listbox = tk.Listbox(
             self.left_frame, height=10, selectmode=tk.SINGLE, 
             activestyle="dotbox", borderwidth=1, relief="solid"
@@ -48,11 +51,9 @@ class ImageResizerApp:
         self.listbox.bind("<<ListboxSelect>>", self._on_select_image)
         self.listbox.bind("<Delete>", self._remove_selected_image)
 
-        # Поддержка Drag-and-Drop
         self.listbox.drop_target_register(DND_FILES)
         self.listbox.dnd_bind("<<Drop>>", self._on_drop_files)
 
-        # Текст-подсказка
         self.placeholder_label = tk.Label(
             self.left_frame,
             text="Выберите или перетяните файлы",
@@ -66,7 +67,6 @@ class ImageResizerApp:
         self.placeholder_label.drop_target_register(DND_FILES)
         self.placeholder_label.dnd_bind("<<Drop>>", self._on_drop_files)
 
-        # Метка со счетчиком
         self.counter_label = ttk.Label(
             self.left_frame, 
             text="Файлов: 0 | Общий размер: 0 МБ", 
@@ -94,6 +94,18 @@ class ImageResizerApp:
             self.wh_frame, text="Сохранять пропорции", variable=self.keep_ratio_var, command=self._toggle_keep_ratio
         )
 
+        # Выбор режима масштабирования
+        self.mode_frame = ttk.Frame(self.param_frame)
+        self.lbl_mode = ttk.Label(self.mode_frame, text="Режим кадрирования:")
+        self.mode_combo = ttk.Combobox(
+            self.mode_frame, 
+            textvariable=self.mode_var, 
+            values=["Растянуть", "Вписать с полями (Fit)", "Обрезать лишнее (Crop)"], 
+            state="readonly", 
+            width=24
+        )
+        self.mode_combo.bind("<<ComboboxSelected>>", self._on_mode_change)
+
         self.format_frame = ttk.Frame(self.param_frame)
         self.lbl_format = ttk.Label(self.format_frame, text="Выходной формат:")
         format_choices = ["Исходный"] + sorted(list(set(FORMATS.values())))
@@ -110,7 +122,6 @@ class ImageResizerApp:
         )
         self.lbl_quality_val = ttk.Label(self.quality_frame, text="85%", width=5)
 
-        # Галочка удаления метаданных
         self.meta_frame = ttk.Frame(self.param_frame)
         self.strip_meta_check = ttk.Checkbutton(
             self.meta_frame, text="Удалять метаданные (EXIF)", variable=self.strip_meta_var
@@ -154,12 +165,17 @@ class ImageResizerApp:
         self.size_label.pack(fill="x")
 
         self.param_frame.pack(fill="x", pady=5)
+        
         self.wh_frame.pack(fill="x", pady=5)
         self.lbl_width.pack(side="left", padx=(0, 5))
         self.width_entry.pack(side="left", padx=(0, 15))
         self.lbl_height.pack(side="left", padx=(0, 5))
         self.height_entry.pack(side="left", padx=(0, 15))
         self.keep_ratio_check.pack(side="left", padx=(10, 0))
+
+        self.mode_frame.pack(fill="x", pady=5)
+        self.lbl_mode.pack(side="left", padx=(0, 10))
+        self.mode_combo.pack(side="left")
 
         self.format_frame.pack(fill="x", pady=5)
         self.lbl_format.pack(side="left", padx=(0, 10))
@@ -189,6 +205,12 @@ class ImageResizerApp:
         self.btn_support.pack(side="right")
 
         self._update_placeholder_visibility()
+
+    def _on_mode_change(self, event=None):
+        # Если выбран Fit или Crop — автоматически отключаем галочку динамического связывания полей
+        if self.mode_var.get() in ("Вписать с полями (Fit)", "Ообрезать лишнее (Crop)"):
+            self.keep_ratio_var.set(False)
+            self._toggle_keep_ratio()
 
     def _update_quality_state(self):
         selected_fmt = self.format_var.get()
@@ -309,6 +331,40 @@ class ImageResizerApp:
 
     def _on_select_image(self, event):
         self.update_preview()
+        
+    def _on_ctrl_key(self, event):
+        if event.keycode == 86 or (event.char and event.char.lower() in ('v', 'м')):
+            self.paste_from_clipboard()
+
+    def paste_from_clipboard(self, event=None):
+        if self.is_processing:
+            return
+
+        try:
+            img = ImageGrab.grabclipboard()
+
+            if isinstance(img, Image.Image):
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"Clipboard_{timestamp}.png"
+                self._process_clipboard_image(img, filename)
+        except Exception as e:
+            print(f"[OSRT] Ошибка при вставке из буфера: {e}")
+
+    def _process_clipboard_image(self, img: Image.Image, filename: str):
+        temp_dir = Path(tempfile.gettempdir()) / "ImageResizerApp"
+        temp_dir.mkdir(exist_ok=True)
+        temp_file_path = str(temp_dir / filename)
+
+        img.save(temp_file_path, "PNG")
+
+        if temp_file_path not in self.image_paths:
+            self.image_paths.append(temp_file_path)
+            self._refresh_listbox()
+            self.listbox.selection_clear(0, tk.END)
+            self.listbox.selection_set(tk.END)
+            self.update_preview()
+            self._update_quality_state()
+            self.result_label.config(text="")
 
     def update_preview(self):
         selection = self.listbox.curselection()
@@ -361,10 +417,7 @@ class ImageResizerApp:
             return
 
         selection = self.listbox.curselection()
-        if not selection:
-            file_path = self.image_paths[0]
-        else:
-            file_path = self.image_paths[selection[0]]
+        file_path = self.image_paths[selection[0]] if selection else self.image_paths[0]
 
         try:
             orig_w, orig_h = ImageProcessor.get_image_info(file_path)
@@ -377,12 +430,16 @@ class ImageResizerApp:
                     new_h = int(int(w_str) * orig_h / orig_w)
                     self.height_entry.delete(0, tk.END)
                     self.height_entry.insert(0, str(new_h))
+                elif w_str == "":
+                    self.height_entry.delete(0, tk.END)
             else:
                 h_str = self.height_entry.get().strip()
                 if h_str.isdigit() and int(h_str) > 0:
                     new_w = int(int(h_str) * orig_w / orig_h)
                     self.width_entry.delete(0, tk.END)
                     self.width_entry.insert(0, str(new_w))
+                elif h_str == "":
+                    self.width_entry.delete(0, tk.END)
         except (ValueError, Exception):
             pass
 
@@ -414,7 +471,6 @@ class ImageResizerApp:
             self.result_label.config(text="")
 
     def set_ui_state(self, state: str):
-        """ Блокирует или разблокирует элементы управления во время обработки """
         self.is_processing = (state == "disabled")
         btn_state = "disabled" if self.is_processing else "normal"
         
@@ -457,6 +513,14 @@ class ImageResizerApp:
             messagebox.showerror("Ошибка", f"Максимальный размер: {MAX_SIZE}×{MAX_SIZE} px.")
             return
 
+        # Картируем название из UI в имя режима
+        mode_mapping = {
+            "Растянуть": "Stretch",
+            "Вписать с полями (Fit)": "Fit",
+            "Обрезать лишнее (Crop)": "Crop"
+        }
+        selected_mode = mode_mapping.get(self.mode_var.get(), "Stretch")
+
         total_files = len(self.image_paths)
         self.progress_bar['maximum'] = total_files
         self.progress_bar['value'] = 0
@@ -471,7 +535,8 @@ class ImageResizerApp:
             "height": height,
             "selected_format": self.format_var.get(),
             "quality_val": self.quality_var.get(),
-            "strip_meta": self.strip_meta_var.get()
+            "strip_meta": self.strip_meta_var.get(),
+            "resize_mode": selected_mode
         }
 
         thread = threading.Thread(
@@ -481,7 +546,7 @@ class ImageResizerApp:
         )
         thread.start()
 
-    def _async_resize_worker(self, image_paths, save_path, width, height, selected_format, quality_val, strip_meta):
+    def _async_resize_worker(self, image_paths, save_path, width, height, selected_format, quality_val, strip_meta, resize_mode):
         errors = []
         total_files = len(image_paths)
 
@@ -494,12 +559,12 @@ class ImageResizerApp:
                     height=height,
                     target_format=selected_format,
                     quality=quality_val,
-                    strip_metadata=strip_meta
+                    strip_metadata=strip_meta,
+                    resize_mode=resize_mode
                 )
             except Exception as e:
                 errors.append(f"{Path(file_path).name}: {str(e)}")
 
-            # Безопасное обновление Tkinter из потока
             self.root.after(10, lambda v=idx + 1: self.progress_bar.config(value=v))
 
         self.root.after(20, self._on_process_complete, total_files, errors)
