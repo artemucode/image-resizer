@@ -20,8 +20,9 @@ class ImageResizerApp:
         # Состояние
         self.image_paths = []
         self.save_path = None
+        self.is_processing = False  # Флаг фоновой обработки
         self.keep_ratio_var = tk.BooleanVar(value=False)
-        self.strip_meta_var = tk.BooleanVar(value=True)  # Добавлена переменная для метаданных
+        self.strip_meta_var = tk.BooleanVar(value=True)
         self.format_var = tk.StringVar(value="Исходный")
         self.quality_var = tk.IntVar(value=85)
 
@@ -51,7 +52,7 @@ class ImageResizerApp:
         self.listbox.drop_target_register(DND_FILES)
         self.listbox.dnd_bind("<<Drop>>", self._on_drop_files)
 
-        # Текст-подсказка (заглушка)
+        # Текст-подсказка
         self.placeholder_label = tk.Label(
             self.left_frame,
             text="Выберите или перетяните файлы",
@@ -65,7 +66,7 @@ class ImageResizerApp:
         self.placeholder_label.drop_target_register(DND_FILES)
         self.placeholder_label.dnd_bind("<<Drop>>", self._on_drop_files)
 
-        # Метка со счетчиком под listbox
+        # Метка со счетчиком
         self.counter_label = ttk.Label(
             self.left_frame, 
             text="Файлов: 0 | Общий размер: 0 МБ", 
@@ -229,6 +230,9 @@ class ImageResizerApp:
         self.counter_label.config(text=f"Файлов: {count} | Общий размер: {size_str}")
 
     def choose_images(self):
+        if self.is_processing:
+            return
+
         files = filedialog.askopenfilenames(
             title="Выберите изображения",
             filetypes=[
@@ -264,6 +268,9 @@ class ImageResizerApp:
         self._update_file_counter()
 
     def clear_file_list(self):
+        if self.is_processing:
+            return
+
         self.image_paths.clear()
         self.listbox.delete(0, tk.END)
         self.preview_label.config(image="")
@@ -274,6 +281,9 @@ class ImageResizerApp:
         self._update_placeholder_visibility()
         
     def _remove_selected_image(self, event=None):
+        if self.is_processing:
+            return
+
         selection = self.listbox.curselection()
         if not selection:
             return
@@ -294,7 +304,9 @@ class ImageResizerApp:
             new_index = min(index, len(self.image_paths) - 1)
             self.listbox.selection_set(new_index)
             self.update_preview()
-    
+        self._update_file_counter()
+        self._update_quality_state()
+
     def _on_select_image(self, event):
         self.update_preview()
 
@@ -318,6 +330,9 @@ class ImageResizerApp:
             self.size_label.config(text="Ошибка файла")
 
     def choose_save_path(self):
+        if self.is_processing:
+            return
+
         folder = filedialog.askdirectory(title="Выберите папку для сохранения")
         if folder:
             self.save_path = folder
@@ -347,24 +362,28 @@ class ImageResizerApp:
 
         selection = self.listbox.curselection()
         if not selection:
-            return
+            file_path = self.image_paths[0]
+        else:
+            file_path = self.image_paths[selection[0]]
 
-        file_path = self.image_paths[selection[0]]
         try:
             orig_w, orig_h = ImageProcessor.get_image_info(file_path)
+            if orig_w == 0 or orig_h == 0:
+                return
+
             if changed_side == "width":
                 w_str = self.width_entry.get().strip()
-                if w_str and int(w_str) > 0:
+                if w_str.isdigit() and int(w_str) > 0:
                     new_h = int(int(w_str) * orig_h / orig_w)
                     self.height_entry.delete(0, tk.END)
                     self.height_entry.insert(0, str(new_h))
             else:
                 h_str = self.height_entry.get().strip()
-                if h_str and int(h_str) > 0:
+                if h_str.isdigit() and int(h_str) > 0:
                     new_w = int(int(h_str) * orig_w / orig_h)
                     self.width_entry.delete(0, tk.END)
                     self.width_entry.insert(0, str(new_w))
-        except ValueError:
+        except (ValueError, Exception):
             pass
 
     def _update_placeholder_visibility(self):
@@ -374,7 +393,10 @@ class ImageResizerApp:
             self.placeholder_label.place_forget()
             
     def _on_drop_files(self, event):
-        raw_files = self.root.tk.splitlist(event.data)
+        if self.is_processing:
+            return
+
+        raw_files = [f.strip("{}") for f in self.root.tk.splitlist(event.data)]
         
         valid_files = [
             f for f in raw_files 
@@ -391,7 +413,20 @@ class ImageResizerApp:
             self._update_quality_state()
             self.result_label.config(text="")
 
+    def set_ui_state(self, state: str):
+        """ Блокирует или разблокирует элементы управления во время обработки """
+        self.is_processing = (state == "disabled")
+        btn_state = "disabled" if self.is_processing else "normal"
+        
+        self.btn_add.config(state=btn_state)
+        self.btn_clear.config(state=btn_state)
+        self.btn_save_dir.config(state=btn_state)
+        self.btn_process.config(state=btn_state)
+
     def resize_images(self):
+        if self.is_processing:
+            return
+
         if not self.image_paths:
             messagebox.showwarning("Внимание", "Сначала выберите изображения.")
             return
@@ -426,7 +461,7 @@ class ImageResizerApp:
         self.progress_bar['maximum'] = total_files
         self.progress_bar['value'] = 0
         
-        self.btn_process.config(state="disabled")
+        self.set_ui_state("disabled")
         self.result_label.config(text="Обработка файлов...", foreground="blue")
 
         params = {
@@ -464,12 +499,13 @@ class ImageResizerApp:
             except Exception as e:
                 errors.append(f"{Path(file_path).name}: {str(e)}")
 
-            self.root.after(0, lambda v=idx + 1: self.progress_bar.config(value=v))
+            # Безопасное обновление Tkinter из потока
+            self.root.after(10, lambda v=idx + 1: self.progress_bar.config(value=v))
 
-        self.root.after(0, self._on_process_complete, total_files, errors)
+        self.root.after(20, self._on_process_complete, total_files, errors)
 
     def _on_process_complete(self, total_files, errors):
-        self.btn_process.config(state="normal")
+        self.set_ui_state("normal")
 
         successful = total_files - len(errors)
         self.result_label.config(

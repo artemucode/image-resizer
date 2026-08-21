@@ -10,5 +10,5 @@ FORMATS = {
     ".webp": "WEBP"
 }
 
-VERSION = "1.0"
+VERSION = "1.1"
 APP_TITLE = f"Image Resizer v{VERSION}"
