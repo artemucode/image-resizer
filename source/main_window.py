@@ -3,6 +3,7 @@ import webbrowser
 import tkinter as tk
 import threading
 import tempfile
+import shutil
 from pathlib import Path
 from tkinter import ttk, filedialog, messagebox
 from tkinterdnd2 import DND_FILES
@@ -30,6 +31,7 @@ class ImageResizerApp:
         self.quality_var = tk.IntVar(value=85)
         
         self.root.bind("<Control-Key>", self._on_ctrl_key)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         
         setup_styles()
         self._create_widgets()
@@ -208,7 +210,7 @@ class ImageResizerApp:
 
     def _on_mode_change(self, event=None):
         # Если выбран Fit или Crop — автоматически отключаем галочку динамического связывания полей
-        if self.mode_var.get() in ("Вписать с полями (Fit)", "Ообрезать лишнее (Crop)"):
+        if self.mode_var.get() in ("Вписать с полями (Fit)", "Обрезать лишнее (Crop)"):
             self.keep_ratio_var.set(False)
             self._toggle_keep_ratio()
 
@@ -351,7 +353,7 @@ class ImageResizerApp:
             print(f"[OSRT] Ошибка при вставке из буфера: {e}")
 
     def _process_clipboard_image(self, img: Image.Image, filename: str):
-        temp_dir = Path(tempfile.gettempdir()) / "ImageResizerApp"
+        temp_dir = Path(tempfile.gettempdir()) / "OSRT"
         temp_dir.mkdir(exist_ok=True)
         temp_file_path = str(temp_dir / filename)
 
@@ -403,6 +405,17 @@ class ImageResizerApp:
                 webbrowser.open(self.save_path)
         else:
             messagebox.showwarning("Внимание", "Папка не выбрана или не существует.")
+
+    def _on_close(self):
+        temp_dir = Path(tempfile.gettempdir()) / "OSRT"
+
+        try:
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir)
+        except OSError as e:
+            print(f"[OSRT] Не удалось удалить временную папку: {e}")
+
+        self.root.destroy()
 
     def _toggle_keep_ratio(self):
         if self.keep_ratio_var.get():

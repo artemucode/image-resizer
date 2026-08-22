@@ -13,5 +13,5 @@ FORMATS = {
 # Динамически получаем допустимые расширения из ключей FORMATS
 ALLOWED_EXTENSIONS = set(FORMATS.keys())
 
-VERSION = "1.2"
+VERSION = "1.2.1"
 APP_TITLE = f"OSRT v{VERSION}"
