@@ -9,9 +9,17 @@ from tkinter import ttk, filedialog, messagebox
 from tkinterdnd2 import DND_FILES
 from PIL import Image, ImageTk, ImageGrab
 from datetime import datetime
+
 from config import MAX_SIZE, FORMATS, VERSION, APP_TITLE
 from image_processor import ImageProcessor
 from ui_components import setup_styles
+from settings_manager import SettingsManager
+
+import sys
+
+# Системный звук для Windows
+if sys.platform == "win32":
+    import winsound
 
 class ImageResizerApp:
     def __init__(self, root: tk.Tk):
@@ -20,23 +28,79 @@ class ImageResizerApp:
         self.root.geometry("750x830")
         self.root.minsize(650, 750)
 
+        # 1. Загрузка сохраненных настроек
+        saved_settings = SettingsManager.load_settings()
+
         # Состояние
         self.image_paths = []
-        self.save_path = None
+        self.save_path = saved_settings.get("save_path", "")
         self.is_processing = False
         self.keep_ratio_var = tk.BooleanVar(value=False)
         self.strip_meta_var = tk.BooleanVar(value=True)
         self.format_var = tk.StringVar(value="Исходный")
         self.mode_var = tk.StringVar(value="Растянуть")
-        self.quality_var = tk.IntVar(value=85)
+        self.quality_var = tk.IntVar(value=saved_settings.get("quality", 85))
         
         self.root.bind("<Control-Key>", self._on_ctrl_key)
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         
+        # Перехват закрытия окна
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
         setup_styles()
         self._create_widgets()
         self._layout_widgets()
         self._update_quality_state()
+
+        # 2. Восстановление пути, если он сохранен и существует
+        if self.save_path and os.path.exists(self.save_path):
+            self.save_path_label.config(text=self.save_path, foreground="black")
+
+    def _on_close(self):
+        """Сохранение настроек и очистка временных файлов перед выходом."""
+        SettingsManager.save_settings(
+            save_path=self.save_path,
+            quality=self.quality_var.get()
+        )
+        
+        # Очистка временных файлов из буфера обмена
+        temp_dir = Path(tempfile.gettempdir()) / "ImageResizerApp"
+        try:
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir)
+        except OSError as e:
+            print(f"[ImageResizerApp] Ошибка удаления временной папки: {e}")
+
+        self.root.destroy()
+
+    def choose_save_path(self):
+        if self.is_processing:
+            return
+
+        folder = filedialog.askdirectory(title="Выберите папку для сохранения")
+        if folder:
+            self.save_path = folder
+            self.save_path_label.config(text=folder, foreground="black")
+            self.result_label.config(text="")
+            SettingsManager.save_settings(
+                save_path=self.save_path,
+                quality=self.quality_var.get()
+            )
+
+    def open_output_folder(self):
+        if self.save_path and os.path.exists(self.save_path):
+            if os.name == 'nt':
+                os.startfile(self.save_path)
+            else:
+                webbrowser.open(self.save_path)
+        else:
+            messagebox.showwarning("Внимание", "Папка не выбрана или не существует.")
+
+    def _update_quality_label(self, val):
+        self.lbl_quality_val.config(text=f"{int(float(val))}%")
+        SettingsManager.save_settings(
+            save_path=self.save_path,
+            quality=self.quality_var.get()
+        )
 
     def _create_widgets(self):
         self.main_container = ttk.Frame(self.root, padding=15)
@@ -102,7 +166,7 @@ class ImageResizerApp:
         self.mode_combo = ttk.Combobox(
             self.mode_frame, 
             textvariable=self.mode_var, 
-            values=["Растянуть", "Вписать с полями (Fit)", "Обрезать лишнее (Crop)"], 
+            values=["Растянуть", "Вписать с полями (Fit)", "Ообрезать лишнее (Crop)"], 
             state="readonly", 
             width=24
         )
@@ -122,7 +186,7 @@ class ImageResizerApp:
             self.quality_frame, from_=1, to=100, orient="horizontal", 
             variable=self.quality_var, command=self._update_quality_label
         )
-        self.lbl_quality_val = ttk.Label(self.quality_frame, text="85%", width=5)
+        self.lbl_quality_val = ttk.Label(self.quality_frame, text=f"{self.quality_var.get()}%", width=5)
 
         self.meta_frame = ttk.Frame(self.param_frame)
         self.strip_meta_check = ttk.Checkbutton(
@@ -209,8 +273,7 @@ class ImageResizerApp:
         self._update_placeholder_visibility()
 
     def _on_mode_change(self, event=None):
-        # Если выбран Fit или Crop — автоматически отключаем галочку динамического связывания полей
-        if self.mode_var.get() in ("Вписать с полями (Fit)", "Обрезать лишнее (Crop)"):
+        if self.mode_var.get() in ("Вписать с полями (Fit)", "Ообрезать лишнее (Crop)"):
             self.keep_ratio_var.set(False)
             self._toggle_keep_ratio()
 
@@ -230,9 +293,6 @@ class ImageResizerApp:
         self.lbl_quality.config(state=state)
         self.lbl_quality_val.config(state=state)
 
-    def _update_quality_label(self, val):
-        self.lbl_quality_val.config(text=f"{int(float(val))}%")
-        
     def _update_file_counter(self):
         count = len(self.image_paths)
         if count == 0:
@@ -350,10 +410,10 @@ class ImageResizerApp:
                 filename = f"Clipboard_{timestamp}.png"
                 self._process_clipboard_image(img, filename)
         except Exception as e:
-            print(f"[OSRT] Ошибка при вставке из буфера: {e}")
+            print(f"[ImageResizerApp] Ошибка при вставке из буфера: {e}")
 
     def _process_clipboard_image(self, img: Image.Image, filename: str):
-        temp_dir = Path(tempfile.gettempdir()) / "OSRT"
+        temp_dir = Path(tempfile.gettempdir()) / "ImageResizerApp"
         temp_dir.mkdir(exist_ok=True)
         temp_file_path = str(temp_dir / filename)
 
@@ -386,36 +446,6 @@ class ImageResizerApp:
             self.preview_label.config(image="")
             self.preview_label.image = None
             self.size_label.config(text="Ошибка файла")
-
-    def choose_save_path(self):
-        if self.is_processing:
-            return
-
-        folder = filedialog.askdirectory(title="Выберите папку для сохранения")
-        if folder:
-            self.save_path = folder
-            self.save_path_label.config(text=folder, foreground="black")
-            self.result_label.config(text="")
-
-    def open_output_folder(self):
-        if self.save_path and os.path.exists(self.save_path):
-            if os.name == 'nt':
-                os.startfile(self.save_path)
-            else:
-                webbrowser.open(self.save_path)
-        else:
-            messagebox.showwarning("Внимание", "Папка не выбрана или не существует.")
-
-    def _on_close(self):
-        temp_dir = Path(tempfile.gettempdir()) / "OSRT"
-
-        try:
-            if temp_dir.exists():
-                shutil.rmtree(temp_dir)
-        except OSError as e:
-            print(f"[OSRT] Не удалось удалить временную папку: {e}")
-
-        self.root.destroy()
 
     def _toggle_keep_ratio(self):
         if self.keep_ratio_var.get():
@@ -525,12 +555,11 @@ class ImageResizerApp:
         if width > MAX_SIZE or height > MAX_SIZE:
             messagebox.showerror("Ошибка", f"Максимальный размер: {MAX_SIZE}×{MAX_SIZE} px.")
             return
-
-        # Картируем название из UI в имя режима
+        
         mode_mapping = {
             "Растянуть": "Stretch",
             "Вписать с полями (Fit)": "Fit",
-            "Обрезать лишнее (Crop)": "Crop"
+            "Ообрезать лишнее (Crop)": "Crop"
         }
         selected_mode = mode_mapping.get(self.mode_var.get(), "Stretch")
 
@@ -591,6 +620,8 @@ class ImageResizerApp:
             foreground="black" if not errors else "#D9822B"
         )
 
+        self.play_finish_sound(has_errors=bool(errors))
+
         if errors:
             msg = "\n".join(errors[:5])
             if len(errors) > 5:
@@ -599,6 +630,19 @@ class ImageResizerApp:
         else:
             messagebox.showinfo("Успешно", "Все файлы успешно сохранены!")
             
+    def play_finish_sound(self, has_errors: bool = False):
+        """Воспроизводит звук после завершения обработки."""
+        try:
+            if sys.platform == "win32":
+                # Стандартный звук уведомления Windows
+                sound_type = winsound.MB_ICONEXCLAMATION if has_errors else winsound.MB_ICONASTERISK
+                winsound.MessageBeep(sound_type)
+            else:
+                # Универсальный бип для линукс/мак ос
+                print("\a")
+        except Exception as e:
+            print(f"[OSRT] Ошибка воспроизведения звука: {e}")
+
     def support(self):
         USDT_ADDRESS = "UQALTsk6AvmcEg7fTFCL349d2OXKF1LqPP5iFWoX6aMKTSJZ"
 

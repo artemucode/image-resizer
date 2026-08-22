@@ -2,6 +2,7 @@ import os
 import sys
 from tkinterdnd2 import TkinterDnD
 from main_window import ImageResizerApp
+from settings_manager import SettingsManager
 
 def resource_path(relative_path):
     """
